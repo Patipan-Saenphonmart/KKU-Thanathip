@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { BarChart3, BookOpen, CalendarDays, Check, CheckSquare, ChevronDown, Clock3, Cloud, Info, Pencil, Plus, Save, Target, Trash2, LogIn, LogOut, RefreshCw, AlertTriangle } from 'lucide-react'
 import './App.css'
-import { supabase, signOutUser, fetchTasksByWeek, saveTaskToDb, deleteTaskFromDb, fetchScheduleFromDb, saveScheduleToDb } from './lib/supabase'
+import { supabase, signOutUser, fetchTasksByWeek, saveTaskToDb, syncWeekToDb, deleteTaskFromDb, fetchScheduleFromDb, saveScheduleToDb } from './lib/supabase'
 import AuthModal from './components/AuthModal'
 
 const SUBJECTS = ['คณิตศาสตร์', 'ฟิสิกส์', 'เคมี', 'ชีวะ', 'ภาษาอังกฤษ', 'ภาษาไทย', 'สังคมศึกษา', 'TPAT1 (กสพท)', 'TGAT', 'NETSAT (รวม)', 'อื่นๆ']
@@ -21,6 +21,7 @@ export default function App() {
   const [user, setUser] = useState(null)
   const [authModalOpen, setAuthModalOpen] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [syncSuccessMsg, setSyncSuccessMsg] = useState('')
   const [dbError, setDbError] = useState(null)
 
   const [tab, setTab] = useState('overview')
@@ -72,9 +73,45 @@ export default function App() {
           setTracker(newTracker)
           localStorage.setItem(`tracker-${targetWeek}`, JSON.stringify(newTracker))
         } else {
-          // If no tasks in DB, load local or blank
-          const local = JSON.parse(localStorage.getItem(`tracker-${targetWeek}`) || 'null') || blankWeek()
-          setTracker(local)
+          // If no tasks in DB, check if local storage has existing filled tasks to migrate
+          const local = JSON.parse(localStorage.getItem(`tracker-${targetWeek}`) || 'null')
+          if (local) {
+            const hasAnyData = Object.values(local).flat().some(t => t.text || t.subject || t.completed || t.duration > 0)
+            if (hasAnyData) {
+              try {
+                await syncWeekToDb(currentUser.id, targetWeek, local)
+                const freshTasks = await fetchTasksByWeek(currentUser.id, targetWeek)
+                if (freshTasks && freshTasks.length > 0) {
+                  const migratedTracker = Object.fromEntries(DAYS.map(day => [day, []]))
+                  freshTasks.forEach(item => {
+                    if (migratedTracker[item.day_name]) {
+                      migratedTracker[item.day_name].push({
+                        id: item.id,
+                        dbId: item.id,
+                        text: item.title || '',
+                        subject: item.subject || '',
+                        duration: Number(item.duration_hours) || 0,
+                        completed: Boolean(item.completed)
+                      })
+                    }
+                  })
+                  DAYS.forEach(day => {
+                    if (!migratedTracker[day] || migratedTracker[day].length === 0) {
+                      migratedTracker[day] = [task(1), task(2)]
+                    }
+                  })
+                  setTracker(migratedTracker)
+                  localStorage.setItem(`tracker-${targetWeek}`, JSON.stringify(migratedTracker))
+                  return
+                }
+              } catch (migrateErr) {
+                console.error('Auto migration of local tasks failed:', migrateErr)
+              }
+            }
+            setTracker(local)
+          } else {
+            setTracker(blankWeek())
+          }
         }
       } catch (err) {
         console.error('Failed to fetch tasks from Supabase:', err)
@@ -152,18 +189,23 @@ export default function App() {
     }
   }, [user, week, loadWeekData, loadScheduleData])
 
-  // Window Focus / Tab Switch Auto Sync
+  // Window Focus / Tab Switch / iOS Resume Auto Sync
   useEffect(() => {
-    const handleFocus = () => {
-      if (user) {
+    const handleResume = () => {
+      if (user && document.visibilityState !== 'hidden') {
         loadWeekData(week, user)
         loadScheduleData(user)
       }
     }
 
-    window.addEventListener('focus', handleFocus)
+    window.addEventListener('focus', handleResume)
+    window.addEventListener('pageshow', handleResume)
+    document.addEventListener('visibilitychange', handleResume)
+
     return () => {
-      window.removeEventListener('focus', handleFocus)
+      window.removeEventListener('focus', handleResume)
+      window.removeEventListener('pageshow', handleResume)
+      document.removeEventListener('visibilitychange', handleResume)
     }
   }, [user, week, loadWeekData, loadScheduleData])
 
@@ -172,11 +214,28 @@ export default function App() {
     localStorage.setItem(`tracker-${week}`, JSON.stringify(tracker))
   }, [tracker, week])
 
-  // Manual refresh / force sync
-  const handleManualSync = () => {
-    if (user) {
-      loadWeekData(week, user)
-      loadScheduleData(user)
+  // Manual refresh / force sync (Uploads current data and downloads latest from Supabase)
+  const handleManualSync = async () => {
+    if (!user) {
+      setAuthModalOpen(true)
+      return
+    }
+
+    setSyncing(true)
+    setDbError(null)
+    setSyncSuccessMsg('')
+    try {
+      await syncWeekToDb(user.id, week, tracker)
+      await saveScheduleToDb(user.id, schedule)
+      await loadWeekData(week, user)
+      await loadScheduleData(user)
+      setSyncSuccessMsg('ซิงค์ข้อมูลกับ Supabase Cloud สำเร็จเรียบร้อยแล้ว!')
+      setTimeout(() => setSyncSuccessMsg(''), 4000)
+    } catch (err) {
+      console.error('Manual sync failed:', err)
+      setDbError('ซิงค์ข้อมูลล้มเหลว: ' + (err.message || 'โปรดตรวจสอบการเชื่อมต่อ'))
+    } finally {
+      setSyncing(false)
     }
   }
 
@@ -188,6 +247,7 @@ export default function App() {
         setSyncing(true)
         try {
           await saveScheduleToDb(user.id, schedule)
+          setDbError(null)
         } catch (err) {
           console.error('Failed to save schedule to Supabase:', err)
           setDbError('ไม่สามารถบันทึกตารางลง Supabase ได้ โปรดตรวจสอบโครงสร้างตาราง')
@@ -201,31 +261,36 @@ export default function App() {
 
   // Update task field and sync to Supabase
   const update = async (day, id, field, value) => {
-    let updatedTaskItem = null
+    const currentList = tracker[day] || []
+    const currentItem = currentList.find((item) => item.id === id)
+    if (!currentItem) return
 
-    setTracker((current) => {
-      const updatedDayList = current[day].map((item) => {
-        if (item.id === id) {
-          updatedTaskItem = { ...item, [field]: value }
-          return updatedTaskItem
-        }
-        return item
-      })
-      return { ...current, [day]: updatedDayList }
-    })
+    const updatedTaskItem = { ...currentItem, [field]: value }
 
-    if (user && updatedTaskItem) {
+    // Immediate UI state update
+    setTracker((current) => ({
+      ...current,
+      [day]: (current[day] || []).map((item) => (item.id === id ? updatedTaskItem : item))
+    }))
+
+    // Sync to Supabase
+    if (user) {
+      const hasContent = updatedTaskItem.text || updatedTaskItem.subject || updatedTaskItem.completed || updatedTaskItem.duration > 0 || updatedTaskItem.dbId
+      if (!hasContent) return
+
       try {
         const savedData = await saveTaskToDb(user.id, week, day, updatedTaskItem)
-        if (savedData?.id && updatedTaskItem.dbId !== savedData.id) {
+        if (savedData?.id && currentItem.dbId !== savedData.id) {
           setTracker((current) => ({
             ...current,
-            [day]: current[day].map((item) => item.id === id ? { ...item, dbId: savedData.id, id: savedData.id } : item)
+            [day]: (current[day] || []).map((item) =>
+              item.id === id ? { ...item, dbId: savedData.id, id: savedData.id } : item
+            )
           }))
         }
       } catch (err) {
         console.error('Failed to sync updated task to Supabase:', err)
-        setDbError('ไม่สามารถบันทึกเป้าหมายลง Supabase ได้ (โปรดตรวจสอบว่าได้รัน schema.sql แล้วหรือยัง)')
+        setDbError('ไม่สามารถบันทึกเป้าหมายลง Supabase ได้: ' + (err.message || ''))
       }
     }
   }
@@ -307,38 +372,48 @@ export default function App() {
           </div>
 
           <div className="sync-group">
-            {syncing ? (
-              <div className="sync online">
-                <RefreshCw size={15} className="spin" />
-                <span>กำลังซิงค์...</span>
-              </div>
-            ) : user ? (
-              <button className="sync online" onClick={handleManualSync} title={`ซิงค์คลาวด์แล้ว (${user.email})`}>
-                <Cloud size={15} />
-                <span>Cloud Sync</span>
-                <span className="sync-email">({user.email})</span>
-              </button>
-            ) : (
-              <div className="sync offline">
-                <Cloud size={15} />
-                <span>บันทึกในเครื่อง</span>
-              </div>
-            )}
-
             {user ? (
-              <button className="auth-button" onClick={() => signOutUser()}>
-                <LogOut size={15} />
-                <span>ออกจากระบบ</span>
-              </button>
+              <>
+                <button
+                  className="sync-action-btn"
+                  onClick={handleManualSync}
+                  disabled={syncing}
+                  title="กดเพื่อบันทึกและซิงค์ข้อมูลล่าสุดกับ Supabase Cloud"
+                >
+                  <RefreshCw size={14} className={syncing ? 'spin' : ''} />
+                  <span>{syncing ? 'กำลังซิงค์...' : 'ซิงค์ข้อมูล Cloud'}</span>
+                </button>
+
+                <div className="sync-user-badge" title={`เชื่อมต่อบัญชี ${user.email}`}>
+                  <Cloud size={14} />
+                  <span className="sync-email">{user.email}</span>
+                </div>
+
+                <button className="auth-button" onClick={() => signOutUser()} title="ออกจากระบบ">
+                  <LogOut size={14} />
+                  <span>ออก</span>
+                </button>
+              </>
             ) : (
-              <button className="auth-button" onClick={() => setAuthModalOpen(true)}>
-                <LogIn size={15} />
-                <span>เข้าสู่ระบบ / ซิงค์ Cloud</span>
+              <button
+                className="auth-button login-highlight"
+                onClick={() => setAuthModalOpen(true)}
+                title="กดเพื่อเข้าสู่ระบบ/สมัครสมาชิก และเปิดการซิงค์ข้อมูลข้ามเครื่อง (iOS / PC)"
+              >
+                <Cloud size={16} />
+                <span>เข้าสู่ระบบ / เชื่อมต่อ Cloud Sync</span>
               </button>
             )}
           </div>
         </div>
       </header>
+
+      {syncSuccessMsg && (
+        <div className="sync-success-banner">
+          <Check size={18} />
+          <span>{syncSuccessMsg}</span>
+        </div>
+      )}
 
       {dbError && (
         <div className="db-alert-banner">

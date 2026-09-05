@@ -109,3 +109,12 @@ drop trigger if exists schedule_templates_updated_at on public.schedule_template
 create trigger schedule_templates_updated_at
 before update on public.schedule_templates
 for each row execute procedure public.set_updated_at();
+
+-- Enable Supabase Realtime across devices (Web, iOS, Android, PC)
+alter publication supabase_realtime add table public.study_tasks;
+alter publication supabase_realtime add table public.schedule_templates;
+
+-- Ensure updates/deletes broadcast identity for realtime sync
+alter table public.study_tasks replica identity full;
+alter table public.schedule_templates replica identity full;
+

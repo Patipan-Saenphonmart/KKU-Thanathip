@@ -138,6 +138,59 @@ button.sync:hover {
   border-color: #a2dacb;
 }
 
+.auth-button.login-highlight {
+  background: #d7eecc !important;
+  color: #0c5146 !important;
+  border-color: #bce1ae !important;
+  font-weight: 700 !important;
+  padding: 9px 20px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
+.auth-button.login-highlight:hover {
+  background: #c3e6b4 !important;
+  transform: translateY(-1px);
+}
+
+.sync-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: .8rem;
+  font-weight: 700;
+  font-family: inherit;
+  padding: 8px 16px;
+  border: 1px solid #78cbb8;
+  border-radius: 999px;
+  color: #0c5146;
+  background: #d7eecc;
+  cursor: pointer;
+  transition: all .2s;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+.sync-action-btn:hover:not(:disabled) {
+  background: #c3e6b4;
+  transform: translateY(-1px);
+}
+
+.sync-action-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.sync-user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .75rem;
+  padding: 6px 12px;
+  border: 1px solid #4a8878;
+  border-radius: 999px;
+  color: #d7eecc;
+  background: rgba(0, 0, 0, 0.15);
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -736,6 +789,22 @@ footer {
   font-family: inherit;
   cursor: pointer;
   text-decoration: underline;
+}
+
+.sync-success-banner {
+  width: min(1120px, calc(100% - 32px));
+  margin: 16px auto -8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  border-radius: 12px;
+  color: #135200;
+  font-size: .85rem;
+  font-weight: 600;
+  animation: fadeIn 0.3s ease;
 }
 
 .db-alert-banner {

@@ -7,7 +7,14 @@ if (!supabaseUrl || !supabasePublishableKey) {
   throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY')
 }
 
-export const supabase = createClient(supabaseUrl, supabasePublishableKey)
+export const supabase = createClient(supabaseUrl, supabasePublishableKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+    storageKey: 'kku-supabase-auth'
+  }
+})
 
 // Auth Helpers
 export async function signUpUser(email, password) {
@@ -72,6 +79,43 @@ export async function saveTaskToDb(userId, weekNumber, dayName, task) {
   }
 }
 
+// Batch Sync entire week tasks to DB (e.g. on manual sync or migration)
+export async function syncWeekToDb(userId, weekNumber, tracker) {
+  const validTasks = []
+  Object.entries(tracker).forEach(([dayName, items]) => {
+    (items || []).forEach((item) => {
+      if (item.text || item.subject || item.duration > 0 || item.completed) {
+        validTasks.push({
+          user_id: userId,
+          week_number: weekNumber,
+          day_name: dayName,
+          title: item.text || '',
+          subject: item.subject || '',
+          duration_hours: Number(item.duration) || 0,
+          completed: Boolean(item.completed)
+        })
+      }
+    })
+  })
+
+  // Delete existing records for this week to avoid stale duplicates
+  await supabase
+    .from('study_tasks')
+    .delete()
+    .eq('user_id', userId)
+    .eq('week_number', weekNumber)
+
+  if (validTasks.length > 0) {
+    const { data, error } = await supabase
+      .from('study_tasks')
+      .insert(validTasks)
+      .select()
+    if (error) throw error
+    return data
+  }
+  return []
+}
+
 export async function deleteTaskFromDb(dbId) {
   if (typeof dbId === 'number') {
     const { error } = await supabase
@@ -111,7 +155,7 @@ export async function saveScheduleToDb(userId, scheduleMatrix) {
 
   const { data, error } = await supabase
     .from('schedule_templates')
-    .upsert(rows, { onConflict: 'user_id, row_number' })
+    .upsert(rows, { onConflict: 'user_id,row_number' })
 
   if (error) throw error
   return data
